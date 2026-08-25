@@ -23,16 +23,18 @@ async function logout(): Promise<void> {
 
     // Same reasoning as main.ts's getInputs(): a no-sudo host generally
     // already runs its own persistent tailscaled on the default socket, so
-    // the `tailscale logout` call below needs to be told which one is ours.
+    // the `tailscale logout` call below needs to be told which one is ours
+    // -- explicitly, via --socket=, not TS_SOCKET: confirmed live that
+    // 1.94.2 silently ignores that env var and falls through to the
+    // system daemon instead of erroring, so it's not something to rely on.
+    let socketPath = "";
     if (noSudo) {
       const xdgRuntimeDir =
         process.env.XDG_RUNTIME_DIR ||
         process.env.XDG_CACHE_HOME ||
         path.join(os.homedir(), ".cache");
-      process.env.TS_SOCKET = path.join(
-        xdgRuntimeDir,
-        "tailscaled-no-sudo.sock",
-      );
+      socketPath = path.join(xdgRuntimeDir, "tailscaled-no-sudo.sock");
+      process.env.TS_SOCKET = socketPath;
     }
 
     await withLogGroup(logMode, "Cleaning up Tailscale", async () => {
@@ -65,7 +67,7 @@ async function logout(): Promise<void> {
         if (runnerOS === runnerWindows) {
           execArgs = ["tailscale", "logout"];
         } else if (noSudo) {
-          execArgs = [cmdTailscaleFullPath, "logout"];
+          execArgs = [cmdTailscaleFullPath, `--socket=${socketPath}`, "logout"];
         } else {
           // Linux and macOS - use system-installed binary with sudo
           execArgs = ["sudo", "-E", "tailscale", "logout"];

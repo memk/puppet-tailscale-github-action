@@ -52225,16 +52225,26 @@ function sudoArgs(args) {
 // tailscaled on the machine and never needed this -- but a host that
 // already runs a persistent system tailscaled (exactly the case no-sudo
 // exists for: a NixOS runner that is itself tailnet-joined) has the
-// default control socket already taken, and both tailscaled (--socket=)
-// and the tailscale CLI (TS_SOCKET env var, inherited automatically by
-// every execSilent/spawn call below since none of them override env) need
-// to agree on a different one, or CLI commands silently end up talking to
-// the wrong daemon entirely. Confirmed live: without this, `tailscale up`
-// for the ephemeral job session was instead hitting the host's own
-// permanent tailscaled ("client version ... != tailscaled server version
-// ..." in the log was the tell), and failed because the flags this job
-// asked for didn't match that daemon's already-established identity.
+// default control socket already taken, and both tailscaled and every
+// `tailscale` CLI call need to agree on a different one, or CLI commands
+// silently end up talking to the wrong daemon entirely. Confirmed live:
+// without this, `tailscale up` for the ephemeral job session was instead
+// hitting the host's own permanent tailscaled ("client version ... !=
+// tailscaled server version ..." in the log was the tell), and failed
+// because the flags this job asked for didn't match that daemon's
+// already-established identity.
 let socketPath = "";
+// Global --socket flag (must precede the subcommand: `tailscale --socket=
+// ... status`, not `tailscale status --socket=...`), prepended to every CLI
+// call when no-sudo is set. TS_SOCKET (the documented env-var equivalent)
+// looks like it should make this unnecessary -- it's silently ignored by
+// 1.94.2, confirmed live: `TS_SOCKET=/nonexistent tailscale status` still
+// returned the real tailnet peer list from the *system* daemon, exit 0, no
+// error at all. Whatever version actually added that env var, it isn't
+// this one, so the explicit flag is what actually works.
+function tailscaleSocketArgs(subArgs) {
+    return noSudo ? [`--socket=${socketPath}`, ...subArgs] : subArgs;
+}
 const runnerLinux = "Linux";
 const runnerWindows = "Windows";
 const runnerMacOS = "macOS";
@@ -52249,7 +52259,7 @@ const versionLatest = "latest";
 const versionUnstable = "unstable";
 // Cross-platform Tailscale local API status check
 async function getTailscaleStatus(logMode = "normal") {
-    const { stdout } = await execSilent("get tailscale status", cmdTailscale, ["status", "--json"], { logMode });
+    const { stdout } = await execSilent("get tailscale status", cmdTailscale, tailscaleSocketArgs(["status", "--json"]), { logMode });
     return JSON.parse(stdout);
 }
 async function run() {
@@ -52355,9 +52365,7 @@ async function pingHost(host, logMode) {
             await (0, promises_1.setTimeout)(waitTime);
         }
         try {
-            await execSilent("ping host", cmdTailscale, ["ping", "-c", "1", host], {
-                logMode,
-            });
+            await execSilent("ping host", cmdTailscale, tailscaleSocketArgs(["ping", "-c", "1", host]), { logMode });
             (0, logging_1.logInfo)(logMode, `✅ Ping host ${host} reachable via direct connection!`);
             return;
         }
@@ -52415,7 +52423,15 @@ async function getInputs() {
     noSudo = config.noSudo;
     if (noSudo) {
         socketPath = path.join(xdgRuntimeDir(), "tailscaled-no-sudo.sock");
+        // TS_SOCKET set too on the chance a future tailscale version honors it
+        // (confirmed 1.94.2 silently ignores it -- tailscaleSocketArgs() above
+        // is what actually works there), harmless either way. TAILSCALE_SOCKET_PATH
+        // exported to $GITHUB_ENV so later *workflow* steps -- not just this
+        // action's own calls -- that invoke the bare `tailscale` CLI directly
+        // (e.g. deploy-nixos.yaml's "Verify tailnet") can build their own
+        // --socket= from it.
         process.env.TS_SOCKET = socketPath;
+        core.exportVariable("TAILSCALE_SOCKET_PATH", socketPath);
     }
     if (config.oauthSecret && !config.tags) {
         throw new Error("the tags parameter is required when using an OAuth client");
@@ -52895,7 +52911,7 @@ async function connectToTailscale(config, runnerOS) {
                 execArgs = [cmdTailscale, ...upArgs];
             }
             else if (config.noSudo) {
-                execArgs = [cmdTailscaleFullPath, ...upArgs];
+                execArgs = [cmdTailscaleFullPath, ...tailscaleSocketArgs(upArgs)];
             }
             else {
                 // Linux and macOS - use system-installed binary with sudo
