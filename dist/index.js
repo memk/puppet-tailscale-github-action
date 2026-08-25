@@ -52264,6 +52264,15 @@ async function run() {
             await installTailscale(config, runnerOS);
         });
         if (runnerOS !== runnerWindows) {
+            // Windows adds its own install location to PATH inside
+            // installTailscaleWindows. /usr/local/bin (upstream's hardcoded, only
+            // possible value before install-dir existed) is already on every
+            // standard runner's PATH, so this was never needed on Linux/macOS
+            // before -- but a custom install-dir generally isn't on PATH by
+            // default, so later steps (this action's own "tailscale up"/status
+            // calls excepted, which always use the full path already) would not
+            // find a bare `tailscale` without this.
+            core.addPath(config.installDir);
             await (0, logging_1.withLogGroup)(config.logMode, "Starting tailscaled", async () => {
                 await startTailscaleDaemon(config);
             });
