@@ -52199,9 +52199,28 @@ const semver = __importStar(__nccwpck_require__(62088));
 const promises_1 = __nccwpck_require__(16460);
 const logging_1 = __nccwpck_require__(91338);
 const cmdTailscale = "tailscale";
-const cmdTailscaleFullPath = "/usr/local/bin/tailscale";
 const cmdTailscaled = "tailscaled";
-const cmdTailscaledFullPath = "/usr/local/bin/tailscaled";
+// Overridable via the install-dir input (see getInputs()) -- upstream
+// hardcodes both of these to /usr/local/bin with no way to redirect them,
+// which needs root (or a writable /usr/local/bin) regardless of whether the
+// caller's own sandboxing would otherwise allow it. Kept as the same names
+// used throughout the rest of this file so every existing call site below
+// picks up the configured directory without having to touch each one.
+let cmdTailscaleFullPath = "/usr/local/bin/tailscale";
+let cmdTailscaledFullPath = "/usr/local/bin/tailscaled";
+// Overridable via the no-sudo input (see getInputs()). Upstream always runs
+// installation and daemon/CLI invocation through sudo, which needs real
+// root -- not available, and not actually necessary, when install-dir
+// points somewhere already writable and tailscaled is started in userspace-
+// networking mode (no TUN device, so no elevated capability is needed to
+// run it either).
+let noSudo = false;
+// Returns [command, args] for a privileged operation: sudo-wrapped normally,
+// or run directly (no escalation) when no-sudo is set. args[0] is the real
+// command (e.g. "cp"); the rest are its own arguments.
+function sudoArgs(args) {
+    return noSudo ? [args[0], args.slice(1)] : ["sudo", args];
+}
 const runnerLinux = "Linux";
 const runnerWindows = "Windows";
 const runnerMacOS = "macOS";
@@ -52365,7 +52384,12 @@ async function getInputs() {
         sha256Sum: core.getInput("sha256sum") || "",
         pingHosts: pingHosts,
         logMode: logMode,
+        installDir: core.getInput("install-dir") || "/usr/local/bin",
+        noSudo: core.getBooleanInput("no-sudo"),
     };
+    cmdTailscaleFullPath = path.join(config.installDir, cmdTailscale);
+    cmdTailscaledFullPath = path.join(config.installDir, cmdTailscaled);
+    noSudo = config.noSudo;
     if (config.oauthSecret && !config.tags) {
         throw new Error("the tags parameter is required when using an OAuth client");
     }
@@ -52554,16 +52578,31 @@ async function installTailscaleLinux(config, toolPath) {
     fs.mkdirSync(toolPath, { recursive: true });
     fs.copyFileSync(path.join(extractedDir, cmdTailscale), path.join(toolPath, cmdTailscale));
     fs.copyFileSync(path.join(extractedDir, cmdTailscaled), path.join(toolPath, cmdTailscaled));
-    // Install binaries to /usr/local/bin
-    await execSilent("copy tailscale binaries to /usr/local/bin", "sudo", [
-        "cp",
-        path.join(toolPath, cmdTailscale),
-        path.join(toolPath, cmdTailscaled),
-        "/usr/local/bin",
-    ], { logMode: config.logMode });
+    // Install binaries to installDir
+    {
+        const [cmd, args] = sudoArgs([
+            "cp",
+            path.join(toolPath, cmdTailscale),
+            path.join(toolPath, cmdTailscaled),
+            config.installDir,
+        ]);
+        await execSilent(`copy tailscale binaries to ${config.installDir}`, cmd, args, {
+            logMode: config.logMode,
+        });
+    }
     // Make sure they're executable
-    await execSilent("chmod tailscale binary", "sudo", ["chmod", "+x", cmdTailscaleFullPath], { logMode: config.logMode });
-    await execSilent("chmod tailscaled binary", "sudo", ["chmod", "+x", cmdTailscaledFullPath], { logMode: config.logMode });
+    {
+        const [cmd, args] = sudoArgs(["chmod", "+x", cmdTailscaleFullPath]);
+        await execSilent("chmod tailscale binary", cmd, args, {
+            logMode: config.logMode,
+        });
+    }
+    {
+        const [cmd, args] = sudoArgs(["chmod", "+x", cmdTailscaledFullPath]);
+        await execSilent("chmod tailscaled binary", cmd, args, {
+            logMode: config.logMode,
+        });
+    }
 }
 async function installTailscaleWindows(config, toolPath, fromCache = false) {
     // Create tool directory
@@ -52656,16 +52695,31 @@ async function installTailscaleMacOS(config, toolPath) {
             logMode: config.logMode,
         });
     }
-    // Install binaries to /usr/local/bin
-    await execSilent("copy binaries to /usr/local/bin", "sudo", [
-        "cp",
-        path.join(toolPath, cmdTailscale),
-        path.join(toolPath, cmdTailscaled),
-        "/usr/local/bin",
-    ], { logMode: config.logMode });
+    // Install binaries to installDir
+    {
+        const [cmd, args] = sudoArgs([
+            "cp",
+            path.join(toolPath, cmdTailscale),
+            path.join(toolPath, cmdTailscaled),
+            config.installDir,
+        ]);
+        await execSilent(`copy binaries to ${config.installDir}`, cmd, args, {
+            logMode: config.logMode,
+        });
+    }
     // Make sure they're executable
-    await execSilent("chmod tailscale", "sudo", ["chmod", "+x", cmdTailscaleFullPath], { logMode: config.logMode });
-    await execSilent("chmod tailscaled", "sudo", ["chmod", "+x", cmdTailscaledFullPath], { logMode: config.logMode });
+    {
+        const [cmd, args] = sudoArgs(["chmod", "+x", cmdTailscaleFullPath]);
+        await execSilent("chmod tailscale", cmd, args, {
+            logMode: config.logMode,
+        });
+    }
+    {
+        const [cmd, args] = sudoArgs(["chmod", "+x", cmdTailscaledFullPath]);
+        await execSilent("chmod tailscaled", cmd, args, {
+            logMode: config.logMode,
+        });
+    }
     (0, logging_1.logInfo)(config.logMode, "✅ Tailscale installed successfully on macOS from source");
 }
 async function startTailscaleDaemon(config) {
@@ -52682,8 +52736,14 @@ async function startTailscaleDaemon(config) {
         ...config.tailscaledArgs.split(" ").filter(Boolean),
     ];
     (0, logging_1.logInfo)(config.logMode, "Starting tailscaled daemon...");
-    // Start daemon in background
-    const daemon = (0, child_process_1.spawn)("sudo", ["-E", cmdTailscaled, ...args], {
+    // Start daemon in background. "-E" (preserve environment) is a sudo flag,
+    // not part of the tailscaled invocation itself, so this doesn't fit the
+    // generic sudoArgs() pattern -- no-sudo just runs the full path directly,
+    // no environment-preservation concern since there's no context switch.
+    const [daemonCmd, daemonArgs] = config.noSudo
+        ? [cmdTailscaledFullPath, args]
+        : ["sudo", ["-E", cmdTailscaled, ...args]];
+    const daemon = (0, child_process_1.spawn)(daemonCmd, daemonArgs, {
         detached: true,
         stdio: [
             "ignore",
@@ -52795,6 +52855,9 @@ async function connectToTailscale(config, runnerOS) {
             if (runnerOS === runnerWindows) {
                 execArgs = [cmdTailscale, ...upArgs];
             }
+            else if (config.noSudo) {
+                execArgs = [cmdTailscaleFullPath, ...upArgs];
+            }
             else {
                 // Linux and macOS - use system-installed binary with sudo
                 execArgs = ["sudo", "-E", cmdTailscale, ...upArgs];
@@ -52870,10 +52933,38 @@ async function installCachedBinaries(config, toolPath, runnerOS) {
         const tailscaleBin = path.join(toolPath, cmdTailscale);
         const tailscaledBin = path.join(toolPath, cmdTailscaled);
         if (fs.existsSync(tailscaleBin) && fs.existsSync(tailscaledBin)) {
-            await execSilent("copy tailscale from cache", "sudo", ["cp", tailscaleBin, cmdTailscaleFullPath], { logMode: config.logMode });
-            await execSilent("copy tailscaled from cache", "sudo", ["cp", tailscaledBin, cmdTailscaledFullPath], { logMode: config.logMode });
-            await execSilent("chmod tailscale", "sudo", ["chmod", "+x", cmdTailscaleFullPath], { logMode: config.logMode });
-            await execSilent("chmod tailscaled", "sudo", ["chmod", "+x", cmdTailscaledFullPath], { logMode: config.logMode });
+            {
+                const [cmd, args] = sudoArgs([
+                    "cp",
+                    tailscaleBin,
+                    cmdTailscaleFullPath,
+                ]);
+                await execSilent("copy tailscale from cache", cmd, args, {
+                    logMode: config.logMode,
+                });
+            }
+            {
+                const [cmd, args] = sudoArgs([
+                    "cp",
+                    tailscaledBin,
+                    cmdTailscaledFullPath,
+                ]);
+                await execSilent("copy tailscaled from cache", cmd, args, {
+                    logMode: config.logMode,
+                });
+            }
+            {
+                const [cmd, args] = sudoArgs(["chmod", "+x", cmdTailscaleFullPath]);
+                await execSilent("chmod tailscale", cmd, args, {
+                    logMode: config.logMode,
+                });
+            }
+            {
+                const [cmd, args] = sudoArgs(["chmod", "+x", cmdTailscaledFullPath]);
+                await execSilent("chmod tailscaled", cmd, args, {
+                    logMode: config.logMode,
+                });
+            }
         }
         else {
             throw new Error(`Cached binaries not found in ${toolPath}`);
