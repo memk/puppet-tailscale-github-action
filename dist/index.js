@@ -52587,7 +52587,10 @@ async function installTailscaleLinux(config, toolPath) {
     fs.mkdirSync(toolPath, { recursive: true });
     fs.copyFileSync(path.join(extractedDir, cmdTailscale), path.join(toolPath, cmdTailscale));
     fs.copyFileSync(path.join(extractedDir, cmdTailscaled), path.join(toolPath, cmdTailscaled));
-    // Install binaries to installDir
+    // Install binaries to installDir. cp doesn't create its own destination
+    // -- fine when this is always /usr/local/bin, which already exists on
+    // any standard runner, not fine for an arbitrary configured directory.
+    fs.mkdirSync(config.installDir, { recursive: true });
     {
         const [cmd, args] = sudoArgs([
             "cp",
@@ -52704,7 +52707,10 @@ async function installTailscaleMacOS(config, toolPath) {
             logMode: config.logMode,
         });
     }
-    // Install binaries to installDir
+    // Install binaries to installDir. cp doesn't create its own destination
+    // -- fine when this is always /usr/local/bin, which already exists on
+    // any standard runner, not fine for an arbitrary configured directory.
+    fs.mkdirSync(config.installDir, { recursive: true });
     {
         const [cmd, args] = sudoArgs([
             "cp",
@@ -52942,6 +52948,7 @@ async function installCachedBinaries(config, toolPath, runnerOS) {
         const tailscaleBin = path.join(toolPath, cmdTailscale);
         const tailscaledBin = path.join(toolPath, cmdTailscaled);
         if (fs.existsSync(tailscaleBin) && fs.existsSync(tailscaledBin)) {
+            fs.mkdirSync(config.installDir, { recursive: true });
             {
                 const [cmd, args] = sudoArgs([
                     "cp",
