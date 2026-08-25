@@ -14,6 +14,12 @@ async function logout(): Promise<void> {
   try {
     const runnerOS = process.env.RUNNER_OS || "";
     const logMode = getLogMode();
+    // Post steps re-run against the same action inputs as the main step, so
+    // install-dir/no-sudo (see main.ts's getInputs()) are readable here too.
+    const installDir = core.getInput("install-dir") || "/usr/local/bin";
+    const noSudo = core.getBooleanInput("no-sudo");
+    const cmdTailscaleFullPath = path.join(installDir, "tailscale");
+    const cmdTailscaledFullPath = path.join(installDir, "tailscaled");
 
     await withLogGroup(logMode, "Cleaning up Tailscale", async () => {
       if (runnerOS === runnerMacOS) {
@@ -44,6 +50,8 @@ async function logout(): Promise<void> {
         let execArgs: string[];
         if (runnerOS === runnerWindows) {
           execArgs = ["tailscale", "logout"];
+        } else if (noSudo) {
+          execArgs = [cmdTailscaleFullPath, "logout"];
         } else {
           // Linux and macOS - use system-installed binary with sudo
           execArgs = ["sudo", "-E", "tailscale", "logout"];
@@ -88,10 +96,22 @@ async function logout(): Promise<void> {
           if (pid === "") {
             throw new Error("pid file empty");
           }
-          // The pid is actually the pid of the `sudo` parent of tailscaled, so use pkill -P to kill children of that parent
-          await execCommand("sudo", ["pkill", "-P", pid], { logMode });
-          // Clean up DNS and routes.
-          await execCommand("sudo", ["tailscaled", "--cleanup"], { logMode });
+          if (noSudo) {
+            // No sudo parent in this mode -- the stored pid is tailscaled's
+            // own, so kill it directly rather than pkill -P (which targets
+            // children of the given pid, not the pid itself).
+            await execCommand("kill", [pid], { logMode });
+            await execCommand(cmdTailscaledFullPath, ["--cleanup"], {
+              logMode,
+            });
+          } else {
+            // The pid is actually the pid of the `sudo` parent of tailscaled, so use pkill -P to kill children of that parent
+            await execCommand("sudo", ["pkill", "-P", pid], { logMode });
+            // Clean up DNS and routes.
+            await execCommand("sudo", ["tailscaled", "--cleanup"], {
+              logMode,
+            });
+          }
         }
         logInfo(logMode, "✅ Stopped tailscale");
       } catch (error) {

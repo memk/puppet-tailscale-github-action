@@ -60,6 +60,24 @@ inputs:
     description: 'Expected SHA256 checksum of the tarball.'
     required: false
     default: ''
+  install-dir:
+    description: >-
+      Directory (Linux/macOS) to install the tailscale/tailscaled binaries
+      into. Defaults to /usr/local/bin, matching upstream. Override this to
+      point at a directory the calling user can already write to, so that
+      installation does not require root.
+    required: false
+    default: '/usr/local/bin'
+  no-sudo:
+    description: >-
+      Skip sudo entirely for installation, and for starting tailscaled /
+      running tailscale up (Linux/macOS only) -- run everything directly as
+      the calling user instead. Only makes sense combined with install-dir
+      pointing somewhere already writable, and (for the daemon/CLI calls)
+      tailscaled-args including --tun=userspace-networking, since that mode
+      needs no elevated capability to run.
+    required: false
+    default: 'false'
   ping:
     description: 'Comma separated list of hosts (Tailscale IP addresses or machine names if MagicDNS is enabled on the tailnet) to `tailscale ping` for connectivity verification after `tailscale up` completes.'
     required: false
