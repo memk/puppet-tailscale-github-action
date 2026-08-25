@@ -49,6 +49,21 @@ function sudoArgs(args: string[]): [string, string[]] {
   return noSudo ? [args[0], args.slice(1)] : ["sudo", args];
 }
 
+// Set in getInputs() when no-sudo is set. Upstream assumes it's the only
+// tailscaled on the machine and never needed this -- but a host that
+// already runs a persistent system tailscaled (exactly the case no-sudo
+// exists for: a NixOS runner that is itself tailnet-joined) has the
+// default control socket already taken, and both tailscaled (--socket=)
+// and the tailscale CLI (TS_SOCKET env var, inherited automatically by
+// every execSilent/spawn call below since none of them override env) need
+// to agree on a different one, or CLI commands silently end up talking to
+// the wrong daemon entirely. Confirmed live: without this, `tailscale up`
+// for the ephemeral job session was instead hitting the host's own
+// permanent tailscaled ("client version ... != tailscaled server version
+// ..." in the log was the tell), and failed because the flags this job
+// asked for didn't match that daemon's already-established identity.
+let socketPath = "";
+
 const runnerLinux = "Linux";
 const runnerWindows = "Windows";
 const runnerMacOS = "macOS";
@@ -317,6 +332,11 @@ async function getInputs(): Promise<TailscaleConfig> {
   cmdTailscaleFullPath = path.join(config.installDir, cmdTailscale);
   cmdTailscaledFullPath = path.join(config.installDir, cmdTailscaled);
   noSudo = config.noSudo;
+
+  if (noSudo) {
+    socketPath = path.join(xdgRuntimeDir(), "tailscaled-no-sudo.sock");
+    process.env.TS_SOCKET = socketPath;
+  }
 
   if (config.oauthSecret && !config.tags) {
     throw new Error(
@@ -798,8 +818,15 @@ async function startTailscaleDaemon(config: TailscaleConfig): Promise<void> {
     fs.mkdirSync(config.stateDir, { recursive: true });
   }
 
+  // --socket=, not TS_SOCKET: that env var is a tailscale-CLI convenience
+  // for connecting to a non-default socket (inherited automatically by
+  // every execSilent/spawn call below, since none override env) -- the
+  // daemon itself needs the explicit flag to control where it binds.
+  const socketArgs = config.noSudo ? [`--socket=${socketPath}`] : [];
+
   const args = [
     ...stateArgs,
+    ...socketArgs,
     ...config.tailscaledArgs.split(" ").filter(Boolean),
   ];
 

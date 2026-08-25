@@ -21,6 +21,20 @@ async function logout(): Promise<void> {
     const cmdTailscaleFullPath = path.join(installDir, "tailscale");
     const cmdTailscaledFullPath = path.join(installDir, "tailscaled");
 
+    // Same reasoning as main.ts's getInputs(): a no-sudo host generally
+    // already runs its own persistent tailscaled on the default socket, so
+    // the `tailscale logout` call below needs to be told which one is ours.
+    if (noSudo) {
+      const xdgRuntimeDir =
+        process.env.XDG_RUNTIME_DIR ||
+        process.env.XDG_CACHE_HOME ||
+        path.join(os.homedir(), ".cache");
+      process.env.TS_SOCKET = path.join(
+        xdgRuntimeDir,
+        "tailscaled-no-sudo.sock",
+      );
+    }
+
     await withLogGroup(logMode, "Cleaning up Tailscale", async () => {
       if (runnerOS === runnerMacOS) {
         // The below is required to allow GitHub's post job cleanup to complete.
